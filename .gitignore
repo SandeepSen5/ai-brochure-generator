@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated brochures (examples/ is kept)
+/brochure.md
+/*.md
+!/README.md
+!/README.MD
+
+# Secrets
+.env

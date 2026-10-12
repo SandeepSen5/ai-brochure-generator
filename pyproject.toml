@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
+    "gradio>=6.30.0",
     "openai>=3.26.0",
     "python-dotenv>=1.2.4",
     "requests>=2.34.2",
@@ -16,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 brochure-generate = "brochure_generate:main"
+brochure-ui = "brochure_generate.ui:main"
 
 [build-system]
 requires = ["uv_build>=0.12.22,<0.13.0"]

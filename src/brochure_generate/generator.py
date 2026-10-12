@@ -1,16 +1,39 @@
 import json
+import os
+import sys
 from urllib.parse import urljoin
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from .prompts import BROCHURE_SYSTEM_PROMPT, LINK_SYSTEM_PROMPT
 from .scraper import fetch_website_contents, fetch_website_links
 
-OLLAMA_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_MODEL = "llama3.2"
+load_dotenv()
 
-# Ollama exposes an OpenAI-compatible API; the key is required by the client but ignored.
-client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+# Both Gemini and Ollama expose OpenAI-compatible APIs. If GEMINI_API_KEY is set
+# (free key from https://aistudio.google.com/apikey) use Gemini, otherwise local Ollama.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+USING_GEMINI = bool(GEMINI_API_KEY)
+
+if USING_GEMINI:
+    DEFAULT_MODEL = os.environ.get("BROCHURE_MODEL", "gemini-3.5-flash")
+    # The free tier is busy at times; retry 429/503 with backoff.
+    client = OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY, max_retries=6)
+    MAX_CONTEXT_CHARS = 20_000
+else:
+    DEFAULT_MODEL = os.environ.get("BROCHURE_MODEL", "llama3.2")
+    # The key is required by the client but ignored by Ollama.
+    client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    MAX_CONTEXT_CHARS = 5_000  # keep small local models from being overwhelmed
+
+
+def log(message):
+    """Progress messages go to stderr so they don't mix with the brochure text."""
+    print(message, file=sys.stderr, flush=True)
 
 
 def get_links_user_prompt(url, links):
@@ -25,7 +48,9 @@ def get_links_user_prompt(url, links):
 def select_relevant_links(url, model=DEFAULT_MODEL):
     """Ask the LLM which links on the page are worth including in the brochure."""
     # Resolve relative links up front so the model (and we) only deal with absolute URLs.
+    log("Collecting links from the landing page...")
     links = list(dict.fromkeys(urljoin(url, link) for link in fetch_website_links(url)))
+    log(f"Found {len(links)} links. Asking {model} to pick the relevant ones...")
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -38,10 +63,12 @@ def select_relevant_links(url, model=DEFAULT_MODEL):
         selected = json.loads(response.choices[0].message.content).get("links", [])
     except json.JSONDecodeError:
         return []
-    return [
+    selected = [
         item for item in selected
         if isinstance(item, dict) and str(item.get("url", "")).startswith("http")
     ]
+    log(f"Selected {len(selected)} relevant links.")
+    return selected
 
 
 def fetch_page_and_all_relevant_links(url, model=DEFAULT_MODEL):
@@ -50,6 +77,7 @@ def fetch_page_and_all_relevant_links(url, model=DEFAULT_MODEL):
     result += "\n\n## Relevant Links:\n"
     for link in select_relevant_links(url, model):
         result += f"\n\n### Link: {link.get('type', 'page')}\n"
+        log(f"Fetching {link.get('type', 'page')}: {link['url']}")
         try:
             result += fetch_website_contents(link["url"])
         except Exception as e:  # one dead link shouldn't kill the brochure
@@ -62,9 +90,9 @@ def create_brochure(company_name, url, model=DEFAULT_MODEL):
     user_prompt = f"You are looking at a company called: {company_name}\n"
     user_prompt += "Here are the contents of its landing page and other relevant pages; "
     user_prompt += "use this information to build a short brochure of the company in markdown without code blocks.\n\n"
-    # Cap the context so a small local model isn't overwhelmed.
-    user_prompt += fetch_page_and_all_relevant_links(url, model)[:5_000]
+    user_prompt += fetch_page_and_all_relevant_links(url, model)[:MAX_CONTEXT_CHARS]
 
+    log("Writing the brochure...\n")
     stream = client.chat.completions.create(
         model=model,
         messages=[
